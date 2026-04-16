@@ -1,0 +1,24 @@
+# Dependencies
+# Never upload node_modules; it's huge and can be rebuilt with 'npm install'
+node_modules/
+
+# Environment Secrets
+# This contains your API keys and local config (PORT, etc.)
+.env
+
+# Logs
+# Useful for debugging locally, but unnecessary for the repo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+logs/
+*.log
+
+# OS Metadata
+# Hidden files created by Mac/Windows
+.DS_Store
+Thumbs.db
+
+# Build/Dist folders (if you eventually use TypeScript or a bundler)
+dist/
+build/
