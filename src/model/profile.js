@@ -10,6 +10,7 @@ const ProfileSchema = new mongoose.Schema({
   age_group: { type: String, required: true },
   country_id: { type: String, required: true },
   country_probability: { type: Number },
+  is_confident: { type: Boolean, default: true },
   created_at: { type: Date, default: () => new Date() }
 }, { 
   toJSON: {
