@@ -1,6 +1,11 @@
 import axios from "axios";
 import { v7 as uuidv7 } from "uuid";
+import countries from "i18n-iso-countries";
+import enLocale from "i18n-iso-countries/langs/en.json" with { type: "json" };
 import Profile from "../model/profile.js";
+import { parseNaturalLanguageQuery } from "../services/nlqService.js";
+
+countries.registerLocale(enLocale);
 
 const getAgeGroup = (age) => {
   if (age <= 12) return "child";
@@ -20,7 +25,6 @@ const validateName = (name) => {
 };
 
 const calculateConfidence = (genderProb, countryProb) => {
-  // A simple heuristic: both probabilities should be decent
   return genderProb >= 0.7 && countryProb >= 0.3;
 };
 
@@ -81,9 +85,9 @@ export const createProfile = async (req, res) => {
       age: ageRes.data.age,
       age_group: getAgeGroup(ageRes.data.age),
       country_id: topCountry.country_id,
+      country_name: countries.getName(topCountry.country_id, "en") || "Unknown",
       country_probability: topCountry.probability,
       is_confident: calculateConfidence(genderRes.data.probability, topCountry.probability),
-      created_at: new Date().toISOString()
     });
 
     const savedProfile = await newProfile.save();
@@ -101,9 +105,12 @@ export const createProfile = async (req, res) => {
 };
 
 export const getProfiles = async (req, res) => {
-  const { name, gender, country_id, age_group } = req.query;
+  const { 
+    name, gender, country_id, age_group, 
+    q, page = 1, limit = 10, sortBy = "created_at", order = "desc" 
+  } = req.query;
 
-  // If name is provided, treat it as a "Find or Create" request
+  // Find-or-Create Logic (if name is provided)
   if (name !== undefined) {
     const validation = validateName(name);
     if (!validation.valid) {
@@ -118,11 +125,6 @@ export const getProfiles = async (req, res) => {
         return res.status(200).json({ status: "success", data: profile });
       }
 
-      // If not found, we redirect the logic to creation (internal call or refactored)
-      // For now, let's just implement the classification here or call createProfile
-      // But express controllers aren't easily called from each other with res.
-      // So we'll just implement the logic.
-      
       const [genderRes, ageRes, nationRes] = await Promise.all([
         axios.get(`https://api.genderize.io?name=${nameLower}`),
         axios.get(`https://api.agify.io?name=${nameLower}`),
@@ -149,9 +151,9 @@ export const getProfiles = async (req, res) => {
         age: ageRes.data.age || 0,
         age_group: getAgeGroup(ageRes.data.age || 0),
         country_id: topCountry.country_id,
+        country_name: countries.getName(topCountry.country_id, "en") || "Unknown",
         country_probability: topCountry.probability,
         is_confident: calculateConfidence(genderRes.data.probability, topCountry.probability),
-        created_at: new Date().toISOString()
       });
 
       await profile.save();
@@ -162,16 +164,45 @@ export const getProfiles = async (req, res) => {
     }
   }
 
-  const filter = {};
-  if (gender) filter.gender = gender.toLowerCase();
-  if (country_id) filter.country_id = country_id.toUpperCase();
-  if (age_group) filter.age_group = age_group.toLowerCase();
+  // Listing Logic with Pagination, Sorting, and NLQ
+  let filter = {};
+
+  // Apply NLQ if 'q' is present
+  if (q) {
+    try {
+      filter = await parseNaturalLanguageQuery(q);
+      console.log(`Parsed NLQ Filter: ${JSON.stringify(filter)}`);
+    } catch (err) {
+      console.error("NLQ parse error, falling back to manual filters:", err);
+    }
+  } else {
+    // Falls back to standard manual filters if q is not provided
+    if (gender) filter.gender = gender.toLowerCase();
+    if (country_id) filter.country_id = country_id.toUpperCase();
+    if (age_group) filter.age_group = age_group.toLowerCase();
+  }
 
   try {
-    const profiles = await Profile.find(filter);
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const sortField = sortBy === "id" ? "_id" : sortBy;
+    const sortOrder = order.toLowerCase() === "asc" ? 1 : -1;
+
+    const [profiles, total] = await Promise.all([
+      Profile.find(filter)
+        .sort({ [sortField]: sortOrder })
+        .skip(skip)
+        .limit(parseInt(limit)),
+      Profile.countDocuments(filter)
+    ]);
+
     res.status(200).json({
       status: "success",
-      count: profiles.length,
+      metadata: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / parseInt(limit))
+      },
       data: profiles
     });
   } catch (error) {
