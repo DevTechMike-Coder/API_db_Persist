@@ -108,12 +108,13 @@ export const getProfiles = async (req, res) => {
   let { 
     name, gender, country_id, age_group, 
     q, page = 1, limit = 10, sort_by, sortBy, order = "desc",
-    min_gender_probability, min_country_probability
+    min_gender_probability, min_country_probability,
+    gender_probability, country_probability
   } = req.query;
 
   // Standardization: Use sort_by as primary
   const finalSortBy = sort_by || sortBy || "created_at";
-  const finalOrder = order.toLowerCase();
+  const finalOrder = order?.toLowerCase() || "desc";
 
   // Find-or-Create Logic (if name is provided)
   if (name !== undefined) {
@@ -173,13 +174,20 @@ export const getProfiles = async (req, res) => {
   page = Math.max(1, parseInt(page) || 1);
   limit = Math.min(50, Math.max(1, parseInt(limit) || 10)); // Cap limit at 50
 
-  const allowedSortFields = ["name", "gender", "age", "country_name", "created_at", "gender_probability", "country_probability", "id", "_id"];
   if (!allowedSortFields.includes(finalSortBy)) {
-    return res.status(400).json({ status: "error", message: `Invalid sort_by field: ${finalSortBy}` });
+    return res.status(400).json({ 
+      status: "error", 
+      message: `Invalid sort_by field: ${finalSortBy}`,
+      error: "Invalid query parameters"
+    });
   }
 
   if (!["asc", "desc"].includes(finalOrder)) {
-    return res.status(400).json({ status: "error", message: "Order must be 'asc' or 'desc'" });
+    return res.status(400).json({ 
+      status: "error", 
+      message: "Order must be 'asc' or 'desc'",
+      error: "Invalid query parameters"
+    });
   }
 
   let filter = {};
@@ -189,13 +197,21 @@ export const getProfiles = async (req, res) => {
     try {
       const nlqFilter = await parseNaturalLanguageQuery(q);
       if (nlqFilter === null) {
-        return res.status(400).json({ status: "error", message: "Uninterpretable query" });
+        return res.status(400).json({ 
+          status: "error", 
+          message: "Uninterpretable query",
+          error: "Natural language parsing failed"
+        });
       }
       filter = { ...nlqFilter };
       console.log(`Parsed NLQ Filter: ${JSON.stringify(filter)}`);
     } catch (err) {
       console.error("NLQ parse logic error:", err);
-      return res.status(400).json({ status: "error", message: "Failed to parse natural language query" });
+      return res.status(400).json({ 
+        status: "error", 
+        message: "Failed to parse natural language query",
+        error: "Internal NLQ error"
+      });
     }
   }
 
@@ -204,12 +220,15 @@ export const getProfiles = async (req, res) => {
   if (country_id) filter.country_id = country_id.toUpperCase();
   if (age_group) filter.age_group = age_group.toLowerCase();
 
-  // Step 3: Probability Thresholds
-  if (min_gender_probability) {
-    filter.gender_probability = { $gte: parseFloat(min_gender_probability) };
+  // Step 3: Probability Thresholds (Support both min_ and direct names)
+  const gProb = min_gender_probability || gender_probability;
+  const cProb = min_country_probability || country_probability;
+
+  if (gProb && !isNaN(parseFloat(gProb))) {
+    filter.gender_probability = { $gte: parseFloat(gProb) };
   }
-  if (min_country_probability) {
-    filter.country_probability = { $gte: parseFloat(min_country_probability) };
+  if (cProb && !isNaN(parseFloat(cProb))) {
+    filter.country_probability = { $gte: parseFloat(cProb) };
   }
 
   try {
@@ -227,12 +246,10 @@ export const getProfiles = async (req, res) => {
 
     res.status(200).json({
       status: "success",
-      pagination: {
-        total_records: total,
-        current_page: page,
-        limit: limit,
-        total_pages: Math.ceil(total / limit)
-      },
+      total: total,
+      page: page,
+      limit: limit,
+      pages: Math.ceil(total / limit),
       data: profiles
     });
   } catch (error) {
