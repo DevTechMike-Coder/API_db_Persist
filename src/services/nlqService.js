@@ -29,22 +29,33 @@ export const parseNaturalLanguageQuery = async (queryText) => {
     - country_probability: Number (0 to 1)
     - created_at: Date
 
+    Age Group Definitions:
+    - "child": age <= 12
+    - "teenager": 13 <= age <= 19
+    - "adult": 20 <= age <= 59
+    - "senior": age >= 60
+
     Your task:
     1. Analyze the user's natural language query.
     2. Extract filters for any of the fields mentioned above.
-    3. Return ONLY a valid JSON object represents the MongoDB query (e.g., used in Profile.find(filter)).
-    4. Do not include any explanation or markdown formatting in your response. Just the JSON.
-    5. Handle ranges (e.g., "older than 20" -> { age: { $gt: 20 } }).
-    6. Handle approximate matches for names if necessary, but prioritizes exact fields.
-    7. For countries, if a full name is given, try to resolve it to country_id or use country_name.
+    3. Return ONLY a valid JSON object representing the MongoDB query.
+    4. If the query is ambiguous or uninterpretable, return {"error": "uninterpretable"}.
+    5. Handle terms like "young" as { "age_group": { "$in": ["child", "teenager"] } } or { "age": { "$lt": 20 } }.
+    6. Handle terms like "old" or "elderly" as { "age_group": "senior" }.
+    7. Handle probability thresholds: e.g., "high confidence gender" -> { "gender_probability": { "$gte": 0.9 } }.
+    8. For countries, prioritize using "country_id" (2-letter ISO code).
 
     Example:
     Query: "women from Nigeria older than 30"
     Response: { "gender": "female", "country_id": "NG", "age": { "$gt": 30 } }
 
     Example:
-    Query: "all adults sorted by name" (Ignore sorting in this filter object, just return filters. Sorting is handled elsewhere.)
-    Response: { "age_group": "adult" }
+    Query: "young males"
+    Response: { "gender": "male", "age_group": { "$in": ["child", "teenager"] } }
+
+    Example:
+    Query: "asdfghjkl"
+    Response: { "error": "uninterpretable" }
 
     User Query: "${queryText}"
   `;
@@ -54,14 +65,16 @@ export const parseNaturalLanguageQuery = async (queryText) => {
     const response = await result.response;
     let text = response.text().trim();
     
-    // Remove potential markdown code blocks
-    if (text.startsWith("```")) {
-      text = text.replace(/^```json\n?/, "").replace(/\n?```$/, "");
-    }
+    // Clean up markdown formatting if present
+    text = text.replace(/```json/g, "").replace(/```/g, "").trim();
 
-    return JSON.parse(text);
+    const parsed = JSON.parse(text);
+    if (parsed.error === "uninterpretable") {
+      return null;
+    }
+    return parsed;
   } catch (error) {
     console.error("NLQ Parsing Error:", error);
-    return {}; // Return empty filter on failure
+    return null;
   }
 };

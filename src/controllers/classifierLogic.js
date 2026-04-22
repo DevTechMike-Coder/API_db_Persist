@@ -105,10 +105,15 @@ export const createProfile = async (req, res) => {
 };
 
 export const getProfiles = async (req, res) => {
-  const { 
+  let { 
     name, gender, country_id, age_group, 
-    q, page = 1, limit = 10, sortBy = "created_at", order = "desc" 
+    q, page = 1, limit = 10, sort_by, sortBy, order = "desc",
+    min_gender_probability, min_country_probability
   } = req.query;
+
+  // Standardization: Use sort_by as primary
+  const finalSortBy = sort_by || sortBy || "created_at";
+  const finalOrder = order.toLowerCase();
 
   // Find-or-Create Logic (if name is provided)
   if (name !== undefined) {
@@ -164,44 +169,69 @@ export const getProfiles = async (req, res) => {
     }
   }
 
-  // Listing Logic with Pagination, Sorting, and NLQ
+  // Validation & Sanitization
+  page = Math.max(1, parseInt(page) || 1);
+  limit = Math.min(50, Math.max(1, parseInt(limit) || 10)); // Cap limit at 50
+
+  const allowedSortFields = ["name", "gender", "age", "country_name", "created_at", "gender_probability", "country_probability", "id", "_id"];
+  if (!allowedSortFields.includes(finalSortBy)) {
+    return res.status(400).json({ status: "error", message: `Invalid sort_by field: ${finalSortBy}` });
+  }
+
+  if (!["asc", "desc"].includes(finalOrder)) {
+    return res.status(400).json({ status: "error", message: "Order must be 'asc' or 'desc'" });
+  }
+
   let filter = {};
 
-  // Apply NLQ if 'q' is present
+  // Step 1: Apply NLQ if 'q' is present
   if (q) {
     try {
-      filter = await parseNaturalLanguageQuery(q);
+      const nlqFilter = await parseNaturalLanguageQuery(q);
+      if (nlqFilter === null) {
+        return res.status(400).json({ status: "error", message: "Uninterpretable query" });
+      }
+      filter = { ...nlqFilter };
       console.log(`Parsed NLQ Filter: ${JSON.stringify(filter)}`);
     } catch (err) {
-      console.error("NLQ parse error, falling back to manual filters:", err);
+      console.error("NLQ parse logic error:", err);
+      return res.status(400).json({ status: "error", message: "Failed to parse natural language query" });
     }
-  } else {
-    // Falls back to standard manual filters if q is not provided
-    if (gender) filter.gender = gender.toLowerCase();
-    if (country_id) filter.country_id = country_id.toUpperCase();
-    if (age_group) filter.age_group = age_group.toLowerCase();
+  }
+
+  // Step 2: Combine with manual filters (Manual filters override OR complement NLQ)
+  if (gender) filter.gender = gender.toLowerCase();
+  if (country_id) filter.country_id = country_id.toUpperCase();
+  if (age_group) filter.age_group = age_group.toLowerCase();
+
+  // Step 3: Probability Thresholds
+  if (min_gender_probability) {
+    filter.gender_probability = { $gte: parseFloat(min_gender_probability) };
+  }
+  if (min_country_probability) {
+    filter.country_probability = { $gte: parseFloat(min_country_probability) };
   }
 
   try {
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const sortField = sortBy === "id" ? "_id" : sortBy;
-    const sortOrder = order.toLowerCase() === "asc" ? 1 : -1;
+    const skip = (page - 1) * limit;
+    const sortField = finalSortBy === "id" ? "_id" : finalSortBy;
+    const sortOrderValue = finalOrder === "asc" ? 1 : -1;
 
     const [profiles, total] = await Promise.all([
       Profile.find(filter)
-        .sort({ [sortField]: sortOrder })
+        .sort({ [sortField]: sortOrderValue })
         .skip(skip)
-        .limit(parseInt(limit)),
+        .limit(limit),
       Profile.countDocuments(filter)
     ]);
 
     res.status(200).json({
       status: "success",
-      metadata: {
-        total,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        pages: Math.ceil(total / parseInt(limit))
+      pagination: {
+        total_records: total,
+        current_page: page,
+        limit: limit,
+        total_pages: Math.ceil(total / limit)
       },
       data: profiles
     });
