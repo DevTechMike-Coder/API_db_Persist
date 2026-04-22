@@ -50,12 +50,28 @@ Search your database using plain English. By adding a `q` parameter to your GET 
 - **Query Params**:
   - `q`: Natural language search string.
   - `page`: Page number (default: 1).
-  - `limit`: Results per page (default: 10).
-  - `sortBy`: Field to sort by (default: `created_at`).
+  - `limit`: Results per page (default: 10, max: 50).
+  - `sort_by`: Field to sort by (default: `created_at`).
   - `order`: `asc` or `desc` (default: `desc`).
   - `gender`: Filter by gender.
   - `country_id`: Filter by ISO country code.
   - `age_group`: Filter by child, teenager, adult, or senior.
+  - `gender_probability`: Filter by minimum gender probability.
+  - `country_probability`: Filter by minimum country probability.
+
+- **Response Format**:
+  The API returns a flattened JSON response including pagination metadata:
+  
+  ```json
+  {
+    "status": "success",
+    "total": 100,
+    "page": 1,
+    "limit": 10,
+    "pages": 10,
+    "data": [...]
+  }
+  ```
 
 ### Get Single Profile
 
