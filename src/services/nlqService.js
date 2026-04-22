@@ -39,23 +39,18 @@ export const parseNaturalLanguageQuery = async (queryText) => {
     1. Analyze the user's natural language query.
     2. Extract filters for any of the fields mentioned above.
     3. Return ONLY a valid JSON object representing the MongoDB query.
-    4. If the query is ambiguous or uninterpretable, return {"error": "uninterpretable"}.
-    5. Handle terms like "young" as { "age_group": { "$in": ["child", "teenager"] } } or { "age": { "$lt": 20 } }.
-    6. Handle terms like "old" or "elderly" as { "age_group": "senior" }.
-    7. Handle probability thresholds: e.g., "high confidence gender" -> { "gender_probability": { "$gte": 0.9 } }.
-    8. For countries, prioritize using "country_id" (2-letter ISO code).
+    4. If the query is ambiguous or uninterpretable, return {"uninterpretable": true}.
+    5. Handle terms like "young" as { "age_group": "teenager" } or { "age": { "$lt": 20 } } (prefer discrete groups if possible).
+    6. Handle terms like "females above 30" as { "gender": "female", "age": { "$gt": 30 } }.
+    7. For countries like "Nigeria", return { "country_id": "NG" }.
+
+    Example:
+    Query: "young males"
+    Response: { "gender": "male", "age_group": "teenager" }
 
     Example:
     Query: "women from Nigeria older than 30"
     Response: { "gender": "female", "country_id": "NG", "age": { "$gt": 30 } }
-
-    Example:
-    Query: "young males"
-    Response: { "gender": "male", "age_group": { "$in": ["child", "teenager"] } }
-
-    Example:
-    Query: "asdfghjkl"
-    Response: { "error": "uninterpretable" }
 
     User Query: "${queryText}"
   `;
@@ -65,11 +60,10 @@ export const parseNaturalLanguageQuery = async (queryText) => {
     const response = await result.response;
     let text = response.text().trim();
     
-    // Clean up markdown formatting if present
     text = text.replace(/```json/g, "").replace(/```/g, "").trim();
 
     const parsed = JSON.parse(text);
-    if (parsed.error === "uninterpretable") {
+    if (parsed.uninterpretable) {
       return null;
     }
     return parsed;
