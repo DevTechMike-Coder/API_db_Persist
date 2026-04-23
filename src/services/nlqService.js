@@ -37,20 +37,22 @@ export const parseNaturalLanguageQuery = async (queryText) => {
 
     Your task:
     1. Analyze the user's natural language query.
-    2. Extract filters for any of the fields mentioned above.
+    2. Extract filters for: gender, gender_probability, age, age_group, country_id.
     3. Return ONLY a valid JSON object representing the MongoDB query.
-    4. If the query is ambiguous or uninterpretable, return {"uninterpretable": true}.
-    5. Handle terms like "young" as { "age_group": "teenager" } or { "age": { "$lt": 20 } } (prefer discrete groups if possible).
-    6. Handle terms like "females above 30" as { "gender": "female", "age": { "$gt": 30 } }.
-    7. For countries like "Nigeria", return { "country_id": "NG" }.
+    4. If uninterpretable, return {"uninterpretable": true}.
 
-    Example:
-    Query: "young males"
-    Response: { "gender": "male", "age_group": "teenager" }
+    Rulebook:
+    - "young" -> { "age": { "$lt": 20 } } (OR { "age_group": { "$in": ["child", "teenager"] } }) - prefer age ranges.
+    - Countries -> Resolve to 2-letter ISO code in "country_id".
+    - "above X" -> { "field": { "$gt": X } }.
+    - "below X" -> { "field": { "$lt": X } }.
 
-    Example:
-    Query: "women from Nigeria older than 30"
-    Response: { "gender": "female", "country_id": "NG", "age": { "$gt": 30 } }
+    Examples:
+    - "young males" -> { "gender": "male", "age": { "$lt": 20 } }
+    - "females above 30" -> { "gender": "female", "age": { "$gt": 30 } }
+    - "people from nigeria" -> { "country_id": "NG" }
+    - "adult males from kenya" -> { "gender": "male", "age_group": "adult", "country_id": "KE" }
+    - "Male and female teenagers above 17" -> { "gender": { "$in": ["male", "female"] }, "age_group": "teenager", "age": { "$gt": 17 } }
 
     User Query: "${queryText}"
   `;
@@ -65,7 +67,7 @@ export const parseNaturalLanguageQuery = async (queryText) => {
     if (!jsonMatch) return null;
     
     const parsed = JSON.parse(jsonMatch[0]);
-    if (parsed.uninterpretable) {
+    if (parsed.uninterpretable || Object.keys(parsed).length === 0) {
       return null;
     }
     return parsed;

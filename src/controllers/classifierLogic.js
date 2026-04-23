@@ -40,10 +40,10 @@ export const createProfile = async (req, res) => {
     const nameLower = name.trim().toLowerCase();
     const existingProfile = await Profile.findOne({ name: nameLower });
     if (existingProfile) {
-      return res.status(200).json({ 
-        status: "success", 
+      return res.status(409).json({ 
+        status: "error", 
         message: "Profile already exists", 
-        data: existingProfile 
+        error: "Profile already exists" 
       });
     }
 
@@ -171,6 +171,13 @@ export const getProfiles = async (req, res) => {
   }
 
   // Validation & Sanitization
+  if (req.query.page && (isNaN(parseInt(req.query.page)) || parseInt(req.query.page) < 1)) {
+    return res.status(400).json({ status: "error", message: "Invalid page number", error: "Invalid query parameters" });
+  }
+  if (req.query.limit && (isNaN(parseInt(req.query.limit)) || parseInt(req.query.limit) < 1)) {
+    return res.status(400).json({ status: "error", message: "Invalid limit", error: "Invalid query parameters" });
+  }
+
   page = Math.max(1, parseInt(page) || 1);
   limit = Math.min(50, Math.max(1, parseInt(limit) || 10)); // Cap limit at 50
 
@@ -201,7 +208,7 @@ export const getProfiles = async (req, res) => {
         return res.status(400).json({ 
           status: "error", 
           message: "Uninterpretable query",
-          error: "Uninterpretable query"
+          error: "Invalid query parameters"
         });
       }
       filter = { ...nlqFilter };
@@ -247,10 +254,10 @@ export const getProfiles = async (req, res) => {
 
     res.status(200).json({
       status: "success",
-      total: total,
-      totalPages: Math.ceil(total / limit),
-      page: page,
+      total_records: total,
+      current_page: page,
       limit: limit,
+      total_pages: Math.ceil(total / limit),
       data: profiles
     });
   } catch (error) {
