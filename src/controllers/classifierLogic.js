@@ -4,6 +4,7 @@ import countries from "i18n-iso-countries";
 import enLocale from "i18n-iso-countries/langs/en.json" with { type: "json" };
 import Profile from "../model/profile.js";
 import { parseNaturalLanguageQuery } from "../services/nlqService.js";
+import { sendError, sendPaginatedSuccess, sendValidationError } from "../utils/apiResponses.js";
 
 countries.registerLocale(enLocale);
 
@@ -28,12 +29,51 @@ const calculateConfidence = (genderProb, countryProb) => {
   return genderProb >= 0.7 && countryProb >= 0.3;
 };
 
+const buildValidationDetails = (field, message, value) => {
+  return [{ field, message, value }];
+};
+
+const parsePositiveIntegerParam = (value, field, defaultValue, maxValue = Number.POSITIVE_INFINITY) => {
+  if (value === undefined) {
+    return { value: defaultValue };
+  }
+
+  const normalized = String(value).trim();
+
+  if (!/^\d+$/.test(normalized)) {
+    return {
+      error: {
+        message: `Invalid ${field}`,
+        details: buildValidationDetails(field, `${field} must be a positive integer`, value),
+      },
+    };
+  }
+
+  const parsedValue = Number.parseInt(normalized, 10);
+
+  if (parsedValue < 1) {
+    return {
+      error: {
+        message: `Invalid ${field}`,
+        details: buildValidationDetails(field, `${field} must be greater than or equal to 1`, value),
+      },
+    };
+  }
+
+  return { value: Math.min(parsedValue, maxValue) };
+};
+
 export const createProfile = async (req, res) => {
   const { name } = req.body;
   const validation = validateName(name);
 
   if (!validation.valid) {
-    return res.status(400).json({ status: "error", message: validation.message });
+    return sendError(res, 400, {
+      message: validation.message,
+      error: "Invalid request body",
+      code: "INVALID_PROFILE_NAME",
+      details: buildValidationDetails("name", validation.message, name),
+    });
   }
 
   try {
@@ -107,10 +147,12 @@ export const createProfile = async (req, res) => {
 export const getProfiles = async (req, res) => {
   let { 
     name, gender, country_id, age_group, 
-    q, page = 1, limit = 10, sort_by, sortBy, order = "desc",
+    q, sort_by, sortBy, order = "desc",
     min_gender_probability, min_country_probability,
     gender_probability, country_probability
   } = req.query;
+  let page;
+  let limit;
 
   // Standardization: Use sort_by as primary
   const finalSortBy = sort_by || sortBy || "created_at";
@@ -120,7 +162,11 @@ export const getProfiles = async (req, res) => {
   if (name !== undefined) {
     const validation = validateName(name);
     if (!validation.valid) {
-      return res.status(400).json({ status: "error", message: validation.message });
+      return sendValidationError(
+        res,
+        validation.message,
+        buildValidationDetails("name", validation.message, name),
+      );
     }
 
     try {
@@ -171,31 +217,34 @@ export const getProfiles = async (req, res) => {
   }
 
   // Validation & Sanitization
-  if (req.query.page && (isNaN(parseInt(req.query.page)) || parseInt(req.query.page) < 1)) {
-    return res.status(400).json({ status: "error", message: "Invalid page number", error: "Invalid query parameters" });
-  }
-  if (req.query.limit && (isNaN(parseInt(req.query.limit)) || parseInt(req.query.limit) < 1)) {
-    return res.status(400).json({ status: "error", message: "Invalid limit", error: "Invalid query parameters" });
+  const parsedPage = parsePositiveIntegerParam(req.query.page, "page", 1);
+  if (parsedPage.error) {
+    return sendValidationError(res, parsedPage.error.message, parsedPage.error.details);
   }
 
-  page = Math.max(1, parseInt(page) || 1);
-  limit = Math.min(50, Math.max(1, parseInt(limit) || 10)); // Cap limit at 50
+  const parsedLimit = parsePositiveIntegerParam(req.query.limit, "limit", 10, 50);
+  if (parsedLimit.error) {
+    return sendValidationError(res, parsedLimit.error.message, parsedLimit.error.details);
+  }
+
+  page = parsedPage.value;
+  limit = parsedLimit.value;
 
   const allowedSortFields = ["name", "gender", "age", "country_name", "created_at", "gender_probability", "country_probability", "id", "_id"];
   if (!allowedSortFields.includes(finalSortBy)) {
-    return res.status(400).json({ 
-      status: "error", 
-      message: `Invalid sort_by field: ${finalSortBy}`,
-      error: "Invalid query parameters"
-    });
+    return sendValidationError(res, `Invalid sort_by field: ${finalSortBy}`, buildValidationDetails(
+      "sort_by",
+      `sort_by must be one of: ${allowedSortFields.join(", ")}`,
+      finalSortBy,
+    ));
   }
 
   if (!["asc", "desc"].includes(finalOrder)) {
-    return res.status(400).json({ 
-      status: "error", 
-      message: "Order must be 'asc' or 'desc'",
-      error: "Invalid query parameters"
-    });
+    return sendValidationError(res, "Order must be 'asc' or 'desc'", buildValidationDetails(
+      "order",
+      "order must be either 'asc' or 'desc'",
+      order,
+    ));
   }
 
   let filter = {};
@@ -205,20 +254,21 @@ export const getProfiles = async (req, res) => {
     try {
       const nlqFilter = await parseNaturalLanguageQuery(q);
       if (nlqFilter === null) {
-        return res.status(400).json({ 
-          status: "error", 
-          message: "Uninterpretable query",
-          error: "Invalid query parameters"
-        });
+        return sendValidationError(
+          res,
+          "Uninterpretable query",
+          buildValidationDetails("q", "Unable to interpret the natural language query", q),
+        );
       }
       filter = { ...nlqFilter };
       console.log(`Parsed NLQ Filter: ${JSON.stringify(filter)}`);
     } catch (err) {
       console.error("NLQ parse logic error:", err);
-      return res.status(400).json({ 
-        status: "error", 
+      return sendError(res, 400, {
         message: "Failed to parse natural language query",
-        error: "Internal NLQ error"
+        error: "Internal NLQ error",
+        code: "NLQ_PARSE_ERROR",
+        details: buildValidationDetails("q", "Natural language query parsing failed", q),
       });
     }
   }
@@ -252,22 +302,18 @@ export const getProfiles = async (req, res) => {
       Profile.countDocuments(filter)
     ]);
 
-    const totalPages = total === 0 ? 1 : Math.ceil(total / limit);  
-    res.status(200).json({
-      status: "success",
-      // Primary snake_case keys
-      total_records: total,
-      current_page: page,
-      limit: limit,
-      total_pages: totalPages,
-      // Alias keys for grader compatibility
-      total: total,
-      page: page,
-      pages: totalPages,
-      data: profiles
+    return sendPaginatedSuccess(res, {
+      data: profiles,
+      total,
+      page,
+      limit,
     });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ status: "error", message: "Internal server failure" });
+    return sendError(res, 500, {
+      message: "Internal server failure",
+      error: "Internal server failure",
+      code: "INTERNAL_SERVER_ERROR",
+    });
   }
 };

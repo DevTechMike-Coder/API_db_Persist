@@ -3,12 +3,8 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-if (!process.env.GEMINI_API_KEY) {
-  console.warn("WARNING: GEMINI_API_KEY is not defined in .env");
-}
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash-latest";
+let geminiModel;
 
 // ─── Keyword Pre-Parser ───────────────────────────────────────────────────────
 // Handles all documented NLQ examples natively — no Gemini call needed.
@@ -46,18 +42,94 @@ const AGE_GROUP_KEYWORDS = {
 };
 
 // Filler words to strip before deciding if remaining tokens are unrecognised
-const FILLER = /\b(from|in|of|the|and|or|people|persons?|profiles?|with|who|are|is|a|an|some|all|both|male|female|above|below|over|under|young|old)\b/g;
+const FILLER = /\b(from|in|of|the|and|or|people|persons?|profiles?|with|who|are|is|a|an|some|all|both|male|males|female|females|man|men|woman|women|above|below|over|under|young|old|older|younger|than)\b/g;
+const SORTED_COUNTRIES = Object.keys(COUNTRY_MAP).sort((a, b) => b.length - a.length);
+const COMMON_QUERY_WORDS = new Set([
+  "male", "males", "female", "females", "man", "men", "woman", "women",
+  "boy", "boys", "girl", "girls", "young", "old", "older", "younger",
+  "child", "children", "kid", "kids", "teen", "teens", "teenager", "teenagers",
+  "adult", "adults", "senior", "seniors", "elderly", "people", "person",
+  "profile", "profiles", "from", "in", "of", "and", "or", "both",
+  "above", "below", "over", "under", "than",
+]);
+
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const normalizeQueryText = (queryText) => {
+  return String(queryText ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+};
+
+const mergeAgeFilter = (existingAgeFilter, update) => {
+  return { ...(existingAgeFilter || {}), ...update };
+};
+
+export const isObviouslyUninterpretableQuery = (text) => {
+  if (!text) {
+    return true;
+  }
+
+  if (SORTED_COUNTRIES.some((countryName) => text.includes(countryName))) {
+    return false;
+  }
+
+  const tokens = text.match(/[a-z]+/g) || [];
+  if (tokens.length === 0) {
+    return true;
+  }
+
+  if (tokens.some((token) => COMMON_QUERY_WORDS.has(token) || AGE_GROUP_KEYWORDS[token])) {
+    return false;
+  }
+
+  const compactText = tokens.join("");
+  const vowelCount = (compactText.match(/[aeiou]/g) || []).length;
+
+  if (tokens.length === 1 && compactText.length >= 6 && vowelCount <= 1) {
+    return true;
+  }
+
+  return compactText.length >= 8 && vowelCount / compactText.length < 0.2;
+};
+
+const getGeminiModel = () => {
+  if (!process.env.GEMINI_API_KEY) {
+    return null;
+  }
+
+  if (!geminiModel) {
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    geminiModel = genAI.getGenerativeModel({ model: DEFAULT_GEMINI_MODEL });
+  }
+
+  return geminiModel;
+};
+
+const generateContentWithGemini = async (prompt) => {
+  const model = getGeminiModel();
+
+  if (!model) {
+    return null;
+  }
+
+  const result = await model.generateContent(prompt);
+  const response = await result.response;
+  return response.text().trim();
+};
 
 /**
  * Attempts to resolve a query purely from keyword matching.
  * Returns a filter object on success, null to escalate to Gemini.
  */
-const keywordPreParse = (text) => {
+export const keywordPreParse = (text) => {
   const filter = {};
   let remaining = text;
 
   // ── 1. Gender (single or multi) ──────────────────────────────────────────
-  const hasMale   = /\b(males?|men|man)\b/.test(remaining);
+  const hasMale   = /\b(males?|men|man|boys?)\b/.test(remaining);
   const hasFemale = /\b(females?|women|woman|girls?)\b/.test(remaining);
 
   if (hasMale && hasFemale) {
@@ -68,13 +140,13 @@ const keywordPreParse = (text) => {
     filter.gender = "female";
   }
 
-  if (hasMale)   remaining = remaining.replace(/\b(males?|men|man)\b/g, "");
-  if (hasFemale) remaining = remaining.replace(/\b(females?|women|woman|girls?)\b/g, "");
+  if (hasMale)   remaining = remaining.replace(/\b(males?|men|man|boys?)\b/g, " ");
+  if (hasFemale) remaining = remaining.replace(/\b(females?|women|woman|girls?)\b/g, " ");
   remaining = remaining.trim();
 
   // ── 2. "young" shorthand → age < 20 ─────────────────────────────────────
   if (/\byoung\b/.test(remaining)) {
-    filter.age = { $lt: 20 };
+    filter.age = mergeAgeFilter(filter.age, { $lt: 20 });
     remaining = remaining.replace(/\byoung\b/g, "").trim();
   }
 
@@ -93,20 +165,20 @@ const keywordPreParse = (text) => {
   const belowMatch = remaining.match(/\b(?:below|under|younger than|less than)\s+(\d+)\b/);
 
   if (aboveMatch) {
-    filter.age = { ...filter.age, $gt: parseInt(aboveMatch[1]) };
+    filter.age = mergeAgeFilter(filter.age, { $gt: Number.parseInt(aboveMatch[1], 10) });
     remaining = remaining.replace(aboveMatch[0], "").trim();
   }
   if (belowMatch) {
-    filter.age = { ...filter.age, $lt: parseInt(belowMatch[1]) };
+    filter.age = mergeAgeFilter(filter.age, { $lt: Number.parseInt(belowMatch[1], 10) });
     remaining = remaining.replace(belowMatch[0], "").trim();
   }
 
   // ── 5. Country — longest match first ─────────────────────────────────────
-  const sortedCountries = Object.keys(COUNTRY_MAP).sort((a, b) => b.length - a.length);
-  for (const name of sortedCountries) {
-    if (remaining.includes(name)) {
+  for (const name of SORTED_COUNTRIES) {
+    const countryRegex = new RegExp(`\\b${escapeRegex(name)}\\b`);
+    if (countryRegex.test(remaining)) {
       filter.country_id = COUNTRY_MAP[name];
-      remaining = remaining.replace(name, "").trim();
+      remaining = remaining.replace(countryRegex, "").trim();
       break;
     }
   }
@@ -114,6 +186,7 @@ const keywordPreParse = (text) => {
   // ── 6. Decide: escalate to Gemini if meaningful tokens remain unresolved ──
   const unresolved = remaining
     .replace(FILLER, "")
+    .replace(/\d+/g, "")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -148,8 +221,12 @@ const isValidFilter = (obj) => {
  * Stage 2: Gemini (complex / ambiguous queries not covered by pre-parser).
  * Returns null → caller sends 400 Uninterpretable query.
  */
-export const parseNaturalLanguageQuery = async (queryText) => {
-  const normalized = queryText.trim().toLowerCase();
+export const parseNaturalLanguageQuery = async (queryText, options = {}) => {
+  const normalized = normalizeQueryText(queryText);
+
+  if (!normalized) {
+    return null;
+  }
 
   // Stage 1 — keyword pre-parser
   const preResult = keywordPreParse(normalized);
@@ -158,8 +235,13 @@ export const parseNaturalLanguageQuery = async (queryText) => {
     return preResult;
   }
 
+  if (isObviouslyUninterpretableQuery(normalized)) {
+    return null;
+  }
+
   // Stage 2 — Gemini fallback
-  if (!process.env.GEMINI_API_KEY) {
+  const generateContent = options.generateContentFn || generateContentWithGemini;
+  if (!process.env.GEMINI_API_KEY && !options.generateContentFn) {
     console.warn("[NLQ] Gemini unavailable — GEMINI_API_KEY not set.");
     return null;
   }
@@ -207,9 +289,12 @@ export const parseNaturalLanguageQuery = async (queryText) => {
   `;
 
   try {
-    const result = await model.generateContent(systemPrompt);
-    const response = await result.response;
-    let text = response.text().trim().replace(/```(?:json)?/g, "").trim();
+    const rawText = await generateContent(systemPrompt);
+    if (!rawText) {
+      return null;
+    }
+
+    const text = rawText.replace(/```(?:json)?/g, "").trim();
 
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
