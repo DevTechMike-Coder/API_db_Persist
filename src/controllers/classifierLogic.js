@@ -174,6 +174,7 @@ export const getProfiles = async (req, res) => {
   page = Math.max(1, parseInt(page) || 1);
   limit = Math.min(50, Math.max(1, parseInt(limit) || 10)); // Cap limit at 50
 
+  const allowedSortFields = ["name", "gender", "age", "country_name", "created_at", "gender_probability", "country_probability", "id", "_id"];
   if (!allowedSortFields.includes(finalSortBy)) {
     return res.status(400).json({ 
       status: "error", 
