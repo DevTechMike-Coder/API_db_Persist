@@ -15,10 +15,10 @@ async function runTests() {
     // 2. Pagination & Envelope Test
     console.log('\n--- Testing Pagination & Envelope Structure ---');
     const pagRes = await axios.get(`${BASE_URL}/profiles?page=1&limit=2`);
-    const { total, page, limit, pages, data } = pagRes.data;
-    if (total !== undefined && page !== undefined && limit !== undefined && pages !== undefined && Array.isArray(data)) {
-      console.log('✅ GET /profiles (Pagination): Envelope is FLATTENED as expected.');
-      console.log(`   Page: ${page} | Limit: ${limit} | Total: ${total} | Pages: ${pages}`);
+    const { total_records, current_page, limit, total_pages, data } = pagRes.data;
+    if (total_records !== undefined && current_page !== undefined && limit !== undefined && total_pages !== undefined && Array.isArray(data)) {
+      console.log('✅ GET /profiles (Pagination): Envelope matches the NEW snake_case structure.');
+      console.log(`   Page: ${current_page} | Limit: ${limit} | Total: ${total_records} | Pages: ${total_pages}`);
     } else {
       console.log('❌ GET /profiles (Pagination): Envelope structure is INCORRECT.');
       console.log('   Keys found:', Object.keys(pagRes.data));
