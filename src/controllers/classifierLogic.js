@@ -252,7 +252,7 @@ export const getProfiles = async (req, res) => {
       Profile.countDocuments(filter)
     ]);
 
-    const totalPages = Math.ceil(total / limit);
+    const totalPages = total === 0 ? 1 : Math.ceil(total / limit);  
     res.status(200).json({
       status: "success",
       // Primary snake_case keys
