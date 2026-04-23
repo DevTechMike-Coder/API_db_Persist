@@ -60,9 +60,11 @@ export const parseNaturalLanguageQuery = async (queryText) => {
     const response = await result.response;
     let text = response.text().trim();
     
-    text = text.replace(/```json/g, "").replace(/```/g, "").trim();
-
-    const parsed = JSON.parse(text);
+    // Extract JSON using regex to handle potential extra text from model
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+    
+    const parsed = JSON.parse(jsonMatch[0]);
     if (parsed.uninterpretable) {
       return null;
     }

@@ -201,7 +201,7 @@ export const getProfiles = async (req, res) => {
         return res.status(400).json({ 
           status: "error", 
           message: "Uninterpretable query",
-          error: "Natural language parsing failed"
+          error: "Uninterpretable query"
         });
       }
       filter = { ...nlqFilter };
@@ -248,9 +248,9 @@ export const getProfiles = async (req, res) => {
     res.status(200).json({
       status: "success",
       total: total,
+      totalPages: Math.ceil(total / limit),
       page: page,
       limit: limit,
-      pages: Math.ceil(total / limit),
       data: profiles
     });
   } catch (error) {
