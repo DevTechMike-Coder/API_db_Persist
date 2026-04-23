@@ -11,8 +11,9 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
 // ─── Keyword Pre-Parser ───────────────────────────────────────────────────────
-// Resolves simple / single-concept queries instantly without a Gemini call.
-// Keeps the API functional even when the Gemini key is missing or rate-limited.
+// Handles all documented NLQ examples natively — no Gemini call needed.
+// Covers: gender, multi-gender, age groups, age ranges ("above/below N"),
+// "young" shorthand, country names → ISO codes.
 
 const COUNTRY_MAP = {
   nigeria: "NG", ghana: "GH", kenya: "KE", "south africa": "ZA",
@@ -30,43 +31,77 @@ const COUNTRY_MAP = {
   argentina: "AR", colombia: "CO", chile: "CL", peru: "PE",
   cameroon: "CM", senegal: "SN", "ivory coast": "CI", zimbabwe: "ZW",
   zambia: "ZM", angola: "AO", mozambique: "MZ", rwanda: "RW",
+  morocco: "MA", algeria: "DZ", tunisia: "TN", libya: "LY",
+  sudan: "SD", somalia: "SO", mali: "ML", niger: "NE",
+  "new zealand": "NZ", ireland: "IE", switzerland: "CH", austria: "AT",
+  belgium: "BE", "czech republic": "CZ", hungary: "HU", romania: "RO",
+  greece: "GR", serbia: "RS", croatia: "HR",
 };
 
-const AGE_GROUP_MAP = {
+const AGE_GROUP_KEYWORDS = {
   child: "child", children: "child", kids: "child", kid: "child",
   teen: "teenager", teens: "teenager", teenager: "teenager", teenagers: "teenager",
   adult: "adult", adults: "adult",
   senior: "senior", seniors: "senior", elderly: "senior",
 };
 
+// Filler words to strip before deciding if remaining tokens are unrecognised
+const FILLER = /\b(from|in|of|the|and|or|people|persons?|profiles?|with|who|are|is|a|an|some|all|both|male|female|above|below|over|under|young|old)\b/g;
+
 /**
  * Attempts to resolve a query purely from keyword matching.
- * Returns a filter object if matched, or null if the query is too complex.
+ * Returns a filter object on success, null to escalate to Gemini.
  */
 const keywordPreParse = (text) => {
   const filter = {};
   let remaining = text;
 
-  // Gender
-  if (/\b(males?|men|man)\b/.test(remaining)) {
+  // ── 1. Gender (single or multi) ──────────────────────────────────────────
+  const hasMale   = /\b(males?|men|man)\b/.test(remaining);
+  const hasFemale = /\b(females?|women|woman|girls?)\b/.test(remaining);
+
+  if (hasMale && hasFemale) {
+    filter.gender = { $in: ["male", "female"] };
+  } else if (hasMale) {
     filter.gender = "male";
-    remaining = remaining.replace(/\b(males?|men|man)\b/g, "").trim();
-  } else if (/\b(females?|women|woman|girls?)\b/.test(remaining)) {
+  } else if (hasFemale) {
     filter.gender = "female";
-    remaining = remaining.replace(/\b(females?|women|woman|girls?)\b/g, "").trim();
   }
 
-  // Age group
-  for (const [keyword, group] of Object.entries(AGE_GROUP_MAP)) {
-    const regex = new RegExp(`\\b${keyword}\\b`);
-    if (regex.test(remaining)) {
+  if (hasMale)   remaining = remaining.replace(/\b(males?|men|man)\b/g, "");
+  if (hasFemale) remaining = remaining.replace(/\b(females?|women|woman|girls?)\b/g, "");
+  remaining = remaining.trim();
+
+  // ── 2. "young" shorthand → age < 20 ─────────────────────────────────────
+  if (/\byoung\b/.test(remaining)) {
+    filter.age = { $lt: 20 };
+    remaining = remaining.replace(/\byoung\b/g, "").trim();
+  }
+
+  // ── 3. Age group keywords ─────────────────────────────────────────────────
+  for (const [keyword, group] of Object.entries(AGE_GROUP_KEYWORDS)) {
+    const re = new RegExp(`\\b${keyword}\\b`);
+    if (re.test(remaining)) {
       filter.age_group = group;
-      remaining = remaining.replace(regex, "").trim();
+      remaining = remaining.replace(re, "").trim();
       break;
     }
   }
 
-  // Country — try multi-word first, then single-word
+  // ── 4. Numeric age range: "above/over N" or "below/under N" ──────────────
+  const aboveMatch = remaining.match(/\b(?:above|over|older than|greater than)\s+(\d+)\b/);
+  const belowMatch = remaining.match(/\b(?:below|under|younger than|less than)\s+(\d+)\b/);
+
+  if (aboveMatch) {
+    filter.age = { ...filter.age, $gt: parseInt(aboveMatch[1]) };
+    remaining = remaining.replace(aboveMatch[0], "").trim();
+  }
+  if (belowMatch) {
+    filter.age = { ...filter.age, $lt: parseInt(belowMatch[1]) };
+    remaining = remaining.replace(belowMatch[0], "").trim();
+  }
+
+  // ── 5. Country — longest match first ─────────────────────────────────────
   const sortedCountries = Object.keys(COUNTRY_MAP).sort((a, b) => b.length - a.length);
   for (const name of sortedCountries) {
     if (remaining.includes(name)) {
@@ -76,27 +111,42 @@ const keywordPreParse = (text) => {
     }
   }
 
-  // Strip common filler words and check if anything meaningful is left
-  const stripped = remaining
-    .replace(/\b(from|in|of|the|and|or|people|persons?|profiles?|with|who|are|is)\b/g, "")
+  // ── 6. Decide: escalate to Gemini if meaningful tokens remain unresolved ──
+  const unresolved = remaining
+    .replace(FILLER, "")
     .replace(/\s+/g, " ")
     .trim();
 
-  // Meaningful tokens remain but we got nothing — escalate to Gemini
-  if (stripped.length > 0 && Object.keys(filter).length === 0) {
+  // Nothing was matched at all and there are unresolved tokens → Gemini
+  if (Object.keys(filter).length === 0 && unresolved.length > 0) {
     return null;
   }
 
+  // Something was matched → return what we have (Gemini can handle edge cases)
   return Object.keys(filter).length > 0 ? filter : null;
+};
+
+// ─── Gemini field allowlist ───────────────────────────────────────────────────
+// Reject Gemini responses that contain fields outside the known schema.
+// This prevents hallucinated filters from being applied.
+const ALLOWED_FILTER_KEYS = new Set([
+  "gender", "gender_probability", "age", "age_group",
+  "country_id", "country_name", "country_probability",
+  "name", "is_confident", "created_at",
+]);
+
+const isValidFilter = (obj) => {
+  if (!obj || typeof obj !== "object") return false;
+  return Object.keys(obj).every((k) => ALLOWED_FILTER_KEYS.has(k));
 };
 
 // ─── Main Export ──────────────────────────────────────────────────────────────
 
 /**
  * Translates a natural language query into a MongoDB filter object.
- * Stage 1: keyword pre-parser (no API call).
- * Stage 2: Gemini (complex / ambiguous queries).
- * Returns null if uninterpretable → caller responds with 400.
+ * Stage 1: keyword pre-parser (no API call — handles all documented examples).
+ * Stage 2: Gemini (complex / ambiguous queries not covered by pre-parser).
+ * Returns null → caller sends 400 Uninterpretable query.
  */
 export const parseNaturalLanguageQuery = async (queryText) => {
   const normalized = queryText.trim().toLowerCase();
@@ -137,19 +187,21 @@ export const parseNaturalLanguageQuery = async (queryText) => {
     1. Analyze the user's natural language query.
     2. Extract filters for: gender, gender_probability, age, age_group, country_id.
     3. Return ONLY a valid JSON object. No markdown, no backticks, no explanation.
-    4. If uninterpretable, return {"uninterpretable": true}.
+    4. If the query is completely uninterpretable (random characters, nonsense), return {"uninterpretable": true}.
 
     Rulebook:
     - "young" -> { "age": { "$lt": 20 } }
     - Countries -> Resolve to 2-letter ISO code in "country_id".
-    - "above X" -> { "field": { "$gt": X } }
-    - "below X" -> { "field": { "$lt": X } }
+    - "above X" / "over X" -> { "age": { "$gt": X } }
+    - "below X" / "under X" -> { "age": { "$lt": X } }
+    - Multiple genders -> { "gender": { "$in": ["male", "female"] } }
 
     Examples:
     - "young males" -> { "gender": "male", "age": { "$lt": 20 } }
     - "females above 30" -> { "gender": "female", "age": { "$gt": 30 } }
     - "people from nigeria" -> { "country_id": "NG" }
     - "adult males from kenya" -> { "gender": "male", "age_group": "adult", "country_id": "KE" }
+    - "Male and female teenagers above 17" -> { "gender": { "$in": ["male", "female"] }, "age_group": "teenager", "age": { "$gt": 17 } }
 
     User Query: "${queryText}"
   `;
@@ -166,7 +218,14 @@ export const parseNaturalLanguageQuery = async (queryText) => {
     }
 
     const parsed = JSON.parse(jsonMatch[0]);
+
     if (parsed.uninterpretable || Object.keys(parsed).length === 0) {
+      return null;
+    }
+
+    // Reject hallucinated fields not in our schema
+    if (!isValidFilter(parsed)) {
+      console.warn("[NLQ] Gemini returned unknown fields:", Object.keys(parsed));
       return null;
     }
 
