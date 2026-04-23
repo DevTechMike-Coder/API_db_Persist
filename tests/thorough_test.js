@@ -8,7 +8,7 @@ async function runTests() {
   try {
     // 1. Create/Enrichment Test
     console.log('--- Testing Profile Creation & Enrichment ---');
-    const createRes = await axios.post(`${BASE_URL}/profiles`, { name: 'Kesiena' });
+    const createRes = await axios.post(`${BASE_URL}/profiles`, { name: 'king' });
     console.log('✅ POST /profiles: Status', createRes.status);
     console.log('   Data:', createRes.data.data.name, '| Gender:', createRes.data.data.gender, '| Country:', createRes.data.data.country_id);
 
